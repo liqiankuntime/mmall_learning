@@ -1,0 +1,47 @@
+*.class
+
+# package file 这是注释  说明一下是包文件
+*.war
+*.ear
+
+# kdiff3
+*.orig
+
+# maven
+target/
+
+# eclipse
+.settings/
+.project
+.classpatch
+
+# idea
+.idea/
+/idea/
+*.ipr
+*.iml
+*.iws
+
+# temp file
+*.log
+*.cache
+*.diff
+*.patch
+*.tmp
+
+# Sysmtem
+.DS_Store
+Thumbs.db
+
+
+
+
+
+
+
+
+
+
+
+
+
