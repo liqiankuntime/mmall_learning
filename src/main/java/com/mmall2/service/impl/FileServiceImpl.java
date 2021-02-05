@@ -60,11 +60,4 @@ public class FileServiceImpl implements IFileService {
 
         return targetFile.getName();
     }
-
-    public static void main(String[] args) {
-        String fileName = "abc.fda.jpg";
-        System.out.println(fileName.lastIndexOf("."));
-        System.out.println(fileName.substring(fileName.lastIndexOf(".")));
-
-    }
 }
