@@ -148,4 +148,26 @@
       update_time = #{updateTime,jdbcType=TIMESTAMP}
     where id = #{id,jdbcType=INTEGER}
   </update>
+
+  <select id="selectCartByUserIdProductId" parameterType="map" resultMap="BaseResultMap">
+    select
+    <include refid="Base_Column_List" />
+    from mmall_cart
+    where user_id = #{userId}
+    and product_id = #{productId}
+  </select>
+
+
+  <select id="selectCartByUserId" resultMap="BaseResultMap" parameterType="int">
+    select
+    <include refid="Base_Column_List" />
+    from mmall_cart
+    where user_id = #{userId}
+  </select>
+
+  <select id="selectCartProductCheckedStatusByUserId" parameterType="int">
+    SELECT count(1) from mmall_cart where checked = 0 and user_id = #{userId}
+--     checked = 0 标识未勾选
+  </select>
+
 </mapper>
