@@ -50,8 +50,8 @@
       quantity, checked, create_time, 
       update_time)
     values (#{id,jdbcType=INTEGER}, #{userId,jdbcType=INTEGER}, #{productId,jdbcType=INTEGER}, 
-      #{quantity,jdbcType=INTEGER}, #{checked,jdbcType=INTEGER}, #{createTime,jdbcType=TIMESTAMP}, 
-      #{updateTime,jdbcType=TIMESTAMP})
+      #{quantity,jdbcType=INTEGER}, #{checked,jdbcType=INTEGER}, now(),
+    now())
   </insert>
   <insert id="insertSelective" parameterType="com.mmall2.pojo.Cart">
     <!--
@@ -167,8 +167,9 @@
 
   <select id="selectCartProductCheckedStatusByUserId" resultType="int" parameterType="int">
     SELECT count(1) from mmall_cart where checked = 0 and user_id = #{userId}
---     checked = 0 标识未勾选
+    <!--  -     checked = 0 标识未勾选-->
   </select>
+
 
   <delete id="deleteByUserIdProductIds" parameterType="map">
     delete from mmall_cart
@@ -180,5 +181,18 @@
       </foreach>
     </if>
   </delete>
+
+  <update id="checkedOrUncheckedProduct" parameterType="map">
+    update mmall_cart
+    set checked = #{checked}, update_time= now()
+    where user_id = #{userId}
+    <if test="productId != null">
+      and product_id = #{productId}
+    </if>
+  </update>
+
+  <select id="selectCartProductCount" parameterType="int" resultType="int">
+    select NULLIF(sum(quantity), 0) as count from mmall_cart where user_id = #{userId}
+  </select>
 
 </mapper>
