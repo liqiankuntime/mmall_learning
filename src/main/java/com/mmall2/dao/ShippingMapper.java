@@ -1,6 +1,9 @@
 package com.mmall2.dao;
 
 import com.mmall2.pojo.Shipping;
+import org.apache.ibatis.annotations.Param;
+
+import java.util.List;
 
 public interface ShippingMapper {
     /**
@@ -50,4 +53,12 @@ public interface ShippingMapper {
      * @mbggenerated
      */
     int updateByPrimaryKey(Shipping record);
+
+    int deleteByShippingIdUserId(@Param("userId") Integer userId, @Param("shippingId") Integer shippingId);
+
+    int updateByShipping(Shipping record);
+
+    Shipping selectByUserIdShippingId(@Param("userId") Integer userId, @Param("shippingId") Integer shippingId);
+
+    List<Shipping> selectListByUserId(Integer userId);
 }
