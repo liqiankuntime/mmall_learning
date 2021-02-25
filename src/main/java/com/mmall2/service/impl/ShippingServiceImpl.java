@@ -49,6 +49,8 @@ public class ShippingServiceImpl implements IShippingService {
 
     public ServerResponse<String> update  (Integer userId, Shipping shipping){
         shipping.setUserId(userId);
+        Shipping curShipping = shippingMapper.selectByUserIdShippingId(userId, shipping.getId());
+        shipping.setCreateTime(curShipping.getCreateTime());// 获取它创建的时间并更新到新的Shipping里
         int rowCount = shippingMapper.updateByShipping(shipping);
         if(rowCount > 0){
             return ServerResponse.createBySuccess("更新地址成功");
