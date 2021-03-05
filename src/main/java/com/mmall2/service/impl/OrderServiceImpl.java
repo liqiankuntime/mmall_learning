@@ -17,18 +17,18 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.mmall2.common.Const;
 import com.mmall2.common.ServerResponse;
-import com.mmall2.dao.OrderItemMapper;
-import com.mmall2.dao.OrderMapper;
-import com.mmall2.dao.PayInfoMapper;
-import com.mmall2.pojo.Order;
-import com.mmall2.pojo.OrderItem;
-import com.mmall2.pojo.PayInfo;
+import com.mmall2.dao.*;
+import com.mmall2.pojo.*;
 import com.mmall2.service.IOrderService;
 import com.mmall2.util.BigDecimalUtil;
 import com.mmall2.util.DateTimeUtil;
 import com.mmall2.util.FTPUtil;
 import com.mmall2.util.PropertiesUtil;
+import com.mmall2.vo.OrderItemVo;
+import com.mmall2.vo.OrderVo;
+import com.mmall2.vo.ShippingVo;
 import net.sf.jsqlparser.schema.Server;
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,9 +37,11 @@ import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 /**
  * @Version 1.0
@@ -50,6 +52,22 @@ import java.util.Map;
 @Service("iOrderService")
 public class OrderServiceImpl implements IOrderService {
 
+
+    // 支付宝当面付2.0服务
+    private static AlipayTradeService   tradeService;
+    static {
+
+        /** 一定要在创建AlipayTradeService之前调用Configs.init()设置默认参数
+         *  Configs会读取classpath下的zfbinfo.properties文件配置信息，如果找不到该文件则确认该文件是否在classpath目录
+         */
+        Configs.init("zfbinfo.properties");
+
+        /** 使用Configs提供的默认参数
+         *  AlipayTradeService可以使用单例或者为静态成员对象，不需要反复new
+         */
+        tradeService = new AlipayTradeServiceImpl.ClientBuilder().build();
+    }
+
     private static final Logger logger = LoggerFactory.getLogger(OrderServiceImpl.class);
 
     @Autowired
@@ -58,9 +76,191 @@ public class OrderServiceImpl implements IOrderService {
     private OrderItemMapper orderItemMapper;
     @Autowired
     private PayInfoMapper payInfoMapper;
+    @Autowired
+    private ProductMapper productMapper;
+    @Autowired
+    private CartMapper cartMapper;
+    @Autowired
+    private ShippingMapper shippingMapper;
 
-    // 支付宝当面付2.0服务
-    private static AlipayTradeService   tradeService;
+    public ServerResponse<Object> createOrder(Integer userId, Integer shippingId){
+        // 从购物车中获取数量,勾选购物车中的商品时会标记哪个商品勾选了
+        List<Cart> cartList = cartMapper.selectCheckedCartByUserId(userId);
+
+        // 计算订单的总价
+        ServerResponse serverResponse = this.getCartOrderItem(userId, cartList);
+        if(!serverResponse.isSuccess()){
+            return serverResponse;
+        }
+        List<OrderItem> orderItemList = (List<OrderItem>)serverResponse.getData();
+        BigDecimal payment = this.getOrderTotalPrice(orderItemList);
+
+        // 生成订单
+        Order order = this.assembleOrder(userId, shippingId, payment);
+        if(order == null){
+            return ServerResponse.createByErrorMessage("生成订单错误");
+        }
+        if(CollectionUtils.isEmpty(orderItemList)){
+            return ServerResponse.createByErrorMessage("购物车为空");
+        }
+        for(OrderItem orderItem: orderItemList){
+            orderItem.setOrderNo(order.getOrderNo());
+        }
+        // mybatis 批量插入
+        orderItemMapper.batchInsert(orderItemList);
+
+        // 插入成功后，更新产品库存
+        this.reduceProductStock(orderItemList);
+        // 清空对应购物车产品
+        this.cleanCart(cartList);
+
+        // 返回订单明细
+        OrderVo orderVo = assembleOrderVo(order, orderItemList);
+        return ServerResponse.createBySuccess(orderVo);
+
+    }
+    private OrderVo assembleOrderVo(Order order, List<OrderItem> orderItemList){
+        OrderVo orderVo = new OrderVo();
+
+        orderVo.setOrderNo(order.getOrderNo());
+        orderVo.setPayment(order.getPayment());
+        orderVo.setPaymentType(order.getPaymentType());
+        orderVo.setPaymentTypeDesc(Const.PaymentTypeEnum.codeOf(order.getPaymentType()).getValue());
+
+        orderVo.setPostage(order.getPostage());
+        orderVo.setStatus(order.getStatus());
+        orderVo.setStatusDesc(Const.OrderStatusEnum.codeOf(order.getStatus()).getValue());
+
+        orderVo.setShippingId(order.getShippingId());
+
+        Shipping shipping = shippingMapper.selectByPrimaryKey(order.getShippingId());
+        if(shipping != null){
+            orderVo.setReceiverName(shipping.getReceiverName());
+            orderVo.setShippingVo(assembleShippingVo(shipping));
+        }
+
+        orderVo.setPaymentTime(DateTimeUtil.dateToStr(order.getPaymentTime()));
+        orderVo.setSendTime(DateTimeUtil.dateToStr(order.getSendTime()));
+        orderVo.setEndTime(DateTimeUtil.dateToStr(order.getEndTime()));
+        orderVo.setCreateTime(DateTimeUtil.dateToStr(order.getCreateTime()));
+        orderVo.setCloseTime(DateTimeUtil.dateToStr(order.getCloseTime()));
+
+        orderVo.setImageHost(PropertiesUtil.getProperty("ftp.server.http.prefix"));
+
+        List<OrderItemVo> orderItemVoList = Lists.newArrayList();
+        for(OrderItem orderItem: orderItemList){
+            OrderItemVo orderItemVo = assembleOrderItemVo(orderItem);
+            orderItemVoList.add(orderItemVo);
+        }
+        orderVo.setOrderItemVoList(orderItemVoList);
+        return orderVo;
+    }
+    private OrderItemVo assembleOrderItemVo(OrderItem orderItem){
+        OrderItemVo orderItemVo = new OrderItemVo();
+
+        orderItemVo.setOrderNo(orderItem.getOrderNo());
+        orderItemVo.setProductId(orderItem.getProductId());
+        orderItemVo.setProductName(orderItem.getProductName());
+        orderItemVo.setProductImage(orderItem.getProductImage());
+        orderItemVo.setCurrentUnitPrice(orderItem.getCurrentUnitPrice());
+        orderItemVo.setQuantity(orderItem.getQuantity());
+        orderItemVo.setTotalPrice(orderItem.getTotalPrice());
+        orderItemVo.setCreateTime(DateTimeUtil.dateToStr(orderItem.getCreateTime()));
+
+        return orderItemVo;
+    }
+    private ShippingVo assembleShippingVo(Shipping shipping){
+        ShippingVo shippingVo = new ShippingVo();
+        shippingVo.setReceiverName(shipping.getReceiverName());
+        shippingVo.setReceiverAddress(shipping.getReceiverAddress());
+        shippingVo.setReceiverProvince(shipping.getReceiverProvince());
+        shippingVo.setReceiverCity(shipping.getReceiverCity());
+        shippingVo.setReceiverDistrict(shipping.getReceiverDistrict());
+        shippingVo.setReceiverMobile(shipping.getReceiverMobile());
+        shippingVo.setReceiverZip(shipping.getReceiverZip());
+        shippingVo.setReceiverPhone(shipping.getReceiverPhone());
+        return shippingVo;
+    }
+    // 清空购物车
+    private void cleanCart(List<Cart> cartList){
+        for(Cart cart: cartList){
+            cartMapper.deleteByPrimaryKey(cart.getId());
+        }
+    }
+    // 更新产品库存
+    private void reduceProductStock(List<OrderItem> orderItemList){
+        for(OrderItem orderItem: orderItemList){
+            Product product = productMapper.selectByPrimaryKey(orderItem.getProductId());
+            product.setStock(product.getStock() - orderItem.getQuantity());
+            productMapper.updateByPrimaryKeySelective(product);
+        }
+    }
+    private Order assembleOrder(Integer userId, Integer shippingId, BigDecimal payment){
+        Order order = new Order();
+        long orderNo = this.generatorOrderNo();
+        order.setOrderNo(orderNo);
+        order.setStatus(Const.OrderStatusEnum.NO_PAY.getCode());
+        order.setPostage(0);// 邮费
+        order.setPaymentType(Const.PaymentTypeEnum.ONLINE_PAY.getCode());
+        order.setPayment(payment);
+        order.setUserId(userId);
+        order.setShippingId(shippingId);
+        // 发货时间
+        // 付款时间
+        int rowCount = orderMapper.insert(order);
+        if(rowCount > 0){
+            return order;
+        }
+        return null;
+    }
+    private Long generatorOrderNo(){
+        long currentTime = System.currentTimeMillis();
+
+        return currentTime + new Random().nextInt(100);// new Random().nextInt(100): 产生0 - 100 的随机数
+    }
+    private BigDecimal getOrderTotalPrice(List<OrderItem> orderItemList){
+        BigDecimal total = new BigDecimal("0");
+        for(OrderItem orderItem: orderItemList){
+            total = BigDecimalUtil.add(total.doubleValue(), orderItem.getTotalPrice().doubleValue());
+        }
+        return total;
+    }
+
+    // 通过购物车创建 订单的明细
+    private ServerResponse<List<OrderItem>> getCartOrderItem(Integer userId, List<Cart> cartList){
+        List<OrderItem> orderItemList = Lists.newArrayList();
+        if(CollectionUtils.isEmpty(cartList)){
+            return ServerResponse.createByErrorMessage("购物车为空");
+        }
+        // 校验购物车数量，产品状态和数量
+        for(Cart cartItem : cartList){
+            OrderItem orderItem = new OrderItem();
+            Product product = productMapper.selectByPrimaryKey(cartItem.getProductId());
+            // 校验购物车中此商品是否在售卖状态
+            if(Const.ProductStatusEnum.ON_SALE.getCode() != product.getStatus()){
+                return ServerResponse.createByErrorMessage("产品"+product.getName()+"不在售卖状态");
+            }
+            // 校验库存
+            if(cartItem.getQuantity() > product.getStock()){
+                return ServerResponse.createByErrorMessage("产品"+product.getName()+"库存不足");
+            }
+            orderItem.setUserId(userId);
+            orderItem.setProductId(product.getId());
+            orderItem.setProductName(product.getName());
+            orderItem.setProductImage(product.getMainImage());
+            orderItem.setCurrentUnitPrice(product.getPrice());
+            orderItem.setQuantity(cartItem.getQuantity());
+            orderItem.setTotalPrice(BigDecimalUtil.mul(
+                    product.getPrice().doubleValue(),
+                    cartItem.getQuantity()
+            ));
+            orderItemList.add(orderItem);
+        }
+        return ServerResponse.createBySuccess(orderItemList);
+
+    }
+
+
 
 
     public ServerResponse pay(Long orderNo, Integer userId, String path){
@@ -132,17 +332,6 @@ public class OrderServiceImpl implements IOrderService {
                 .setTimeoutExpress(timeoutExpress)
                 .setNotifyUrl(PropertiesUtil.getProperty("alipay.callback.url"))//支付宝服务器主动通知商户服务器里指定的页面http路径,根据需要设置
                 .setGoodsDetailList(goodsDetailList);
-
-
-        /** 一定要在创建AlipayTradeService之前调用Configs.init()设置默认参数
-         *  Configs会读取classpath下的zfbinfo.properties文件配置信息，如果找不到该文件则确认该文件是否在classpath目录
-         */
-        Configs.init("zfbinfo.properties");
-
-        /** 使用Configs提供的默认参数
-         *  AlipayTradeService可以使用单例或者为静态成员对象，不需要反复new
-         */
-        tradeService = new AlipayTradeServiceImpl.ClientBuilder().build();
 
         AlipayF2FPrecreateResult result = tradeService.tradePrecreate(builder);
         switch (result.getTradeStatus()) {

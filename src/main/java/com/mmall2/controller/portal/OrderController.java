@@ -38,8 +38,28 @@ public class OrderController {
     @Autowired
     private IOrderService iOrderService;
 
+    // 创建订单
+    @RequestMapping("create.do")
+    @ResponseBody
+    public ServerResponse create(HttpSession session, Integer shippingId){
+        User user = (User) session.getAttribute(Const.CURRENT_USER);
+        if(user == null){
+            return ServerResponse.createByErrorCodeMessage(
+                    ResponseCode.NEED_LOGIN.getCode(),
+                    ResponseCode.NEED_LOGIN.getDesc()
+            );
+        }
+        return iOrderService.createOrder(user.getId(), shippingId);
+    }
 
 
+    /**
+     * 点击付款时触发的方法，会去调用支付宝接口请求回支付的二维码
+     * @param session
+     * @param orderNo
+     * @param request
+     * @return
+     */
     @RequestMapping("pay.do")
     @ResponseBody
     public ServerResponse pay(HttpSession session, Long orderNo, HttpServletRequest request){
@@ -82,7 +102,9 @@ public class OrderController {
             boolean alipayRSACheckedV2 = AlipaySignature.rsaCheckV2(
                     params,
                     Configs.getAlipayPublicKey(),
-                    "utf-8", Configs.getSignType() );
+                    "utf-8",
+                    Configs.getSignType()
+            );
             if(!alipayRSACheckedV2){
                 return ServerResponse.createByErrorMessage("非法请求，验证不通过，再请求就报警");
             }
@@ -90,6 +112,13 @@ public class OrderController {
             logger.error("支付宝验证回调异常", e);
         }
         // todo 验证各种数据
+//        需要严格按照如下描述校验通知数据的正确性：
+//
+//        商户需要验证该通知数据中的 out_trade_no 是否为商户系统中创建的订单号。
+//
+//        判断 total_amount 是否确实为该订单的实际金额（即商户订单创建时的金额）。
+//
+//        校验通知中的 seller_id（或者seller_email) 是否为 out_trade_no 这笔单据的对应的操作方（有的时候，一个商户可能有多个 seller_id/seller_email）。
 
 
         ServerResponse result = iOrderService.aliCallback(params);
